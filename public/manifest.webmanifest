@@ -1,0 +1,10 @@
+{
+  "name": "The Clubhouse Fantasy Coach",
+  "short_name": "Clubhouse",
+  "description": "Private fantasy coaching, league history and manager intelligence.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#061727",
+  "theme_color": "#08723f",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -1,0 +1,8 @@
+data/store.json
+node_modules
+node_modules/
+data/pins.json
+data/*.db
+.env
+screens/
+*.log
