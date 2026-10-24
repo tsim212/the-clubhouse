@@ -137,9 +137,10 @@ async function handler(req,res){try{const u=new URL(req.url,'http://x'),p=u.path
   if(!n.text.trim())return json(res,400,{error:'Write something first.'});list.unshift(n);await sset('notes:'+b.team,list.slice(0,300));return json(res,200,n)}
  // ---- admin ----
  if(p==='/api/admin/login'&&M==='POST'){const{password}=await body(req);const ap=process.env.ADMIN_PASSWORD;
-  if(!ap)return json(res,503,{error:'ADMIN_PASSWORD is not set on the server.'});
-  const a=crypto.createHash('sha256').update(String(password||'')).digest(),b=crypto.createHash('sha256').update(ap).digest();
-  if(!crypto.timingSafeEqual(a,b)){await new Promise(r=>setTimeout(r,800));return json(res,401,{error:'Wrong password.'})}
+  let okA=false;if(ap){const a=crypto.createHash('sha256').update(String(password||'')).digest(),b=crypto.createHash('sha256').update(ap).digest();okA=crypto.timingSafeEqual(a,b)}
+  const at=process.env.ADMIN_TEAM;if(!okA&&at){const rec=await sget('pin:'+at);if(rec&&/^\d{4}$/.test(String(password||'')))okA=crypto.timingSafeEqual(Buffer.from(rec.hash,'hex'),Buffer.from(hashPin(String(password),rec.salt),'hex'))}
+  if(!ap&&!at)return json(res,503,{error:'Admin is not set up on the server.'});
+  if(!okA){await new Promise(r=>setTimeout(r,800));return json(res,401,{error:'Wrong password.'})}
   return json(res,200,{ok:true},{'set-cookie':`ch_admin=${encodeURIComponent(sign('admin'))}; HttpOnly; Path=/; SameSite=Strict; Max-Age=2592000${SECURE}`})}
  if(p.startsWith('/api/admin/')&&!isAdmin(req))return json(res,401,{error:'Admin login required.'});
  if(p==='/api/admin/teams'){const L=await getLeague();const out=[];for(const t of L.teams){const r=await sget('pin:'+t.id);out.push({id:t.id,name:t.name,manager:t.manager,claimed:!!r,claimedAt:r?.claimedAt||null,resetAt:r?.resetAt||null})}
