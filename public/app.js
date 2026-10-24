@@ -35,7 +35,7 @@ async function loadNews(){S.news=await api('/api/news?team='+(S.unlocked?S.team:
 async function refresh(){try{S.league=await api('/api/league?fresh='+Date.now());S.live='live';if(S.unlocked)S.coach=await api('/api/coach?team='+S.team)}catch{S.live='offline'}render(true)}
 setInterval(()=>{if(S.league&&document.visibilityState==='visible'&&$('.topbar'))refresh()},60000);
 const TABS=[['coach','🧠','Coach'],['waivers','➕','Waivers'],['lineup','📋','Lineup'],['notes','📝','Notes'],['news','📰','News'],['league','🏆','League']];
-function render(keepScroll){const y=scrollY;const me=S.league.teams.find(t=>t.id===S.team);const tabs=S.unlocked?TABS:TABS.filter(t=>['news','league'].includes(t[0]));
+function render(keepScroll){const y=scrollY;const me=S.league.teams.find(t=>t.id===S.team);const tabs=S.unlocked?TABS:TABS.filter(t=>['news','league','draft','trade','power'].includes(t[0]));
  app.innerHTML=`<div class="topbar"><div class="club-mark" style="width:36px;height:36px;font-size:14px">TC</div><div class="t"><strong>${S.unlocked?esc(me.name):'League scoreboard'}</strong><small>${S.unlocked?`${esc(me.manager)} · ${me.wins}-${me.losses} · Week ${S.league.week}`:`Week ${S.league.week} · ${S.league.season}`}</small></div>
  <span class="live ${S.live==='live'?'':'off'}">● ${S.live==='live'?'LIVE':'OFFLINE'}</span><button class="ghost" style="width:auto;padding:6px 10px" id="switch">${S.unlocked?'Switch':'Teams'}</button></div><div id="view">${VIEWS[S.tab]()}</div>
  <nav class="tabs"><div>${tabs.map(([k,i,l])=>`<button data-t="${k}" class="${S.tab===k?'on':''}"><span class="i">${i}</span>${l}</button>`).join('')}</div></nav>`;
@@ -77,4 +77,4 @@ const HOOKS={notes(){let kind='move';app.querySelectorAll('#kind button').forEac
   $('#save').onclick=async()=>{try{const n=await post('/api/decisions',{team:S.team,kind,text:$('#nt').value,week:S.league.week});S.notes.unshift(n);toast('Saved');render()}catch(e){toast(e.message)}};
   app.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{await post('/api/decisions',{team:S.team,delete:b.dataset.del});S.notes=S.notes.filter(n=>n.id!==b.dataset.del);render()})},
  league(){app.querySelectorAll('#hm button').forEach(b=>b.onclick=()=>{S.histMode=b.dataset.m;render(true)});const y=$('#yr');if(y)y.onchange=()=>{S.histYear=y.value;render(true)}}};
-boot();
+const _x=document.createElement('script');_x.src='/extras.js';_x.onload=boot;document.head.append(_x);

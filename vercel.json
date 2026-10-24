@@ -3,7 +3,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/index.js": {
-      "includeFiles": "{server.js,data/history-seed.json}",
+      "includeFiles": "{server.js,extras.js,data/history-seed.json}",
       "maxDuration": 15
     }
   },
