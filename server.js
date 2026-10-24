@@ -7,11 +7,13 @@ const PORT=process.env.PORT||3000,LEAGUE=process.env.LEAGUE_ID||'1963911',SEASON
 const SECRET=process.env.SESSION_SECRET||process.env.ADMIN_PASSWORD||'dev-secret-change-me';
 const PUB=path.join(__dirname,'public'),DATA=path.join(__dirname,'data');
 // ---------- storage (Upstash REST or local file) ----------
-const UP=process.env.UPSTASH_REDIS_REST_URL,UPT=process.env.UPSTASH_REDIS_REST_TOKEN,FILE=path.join(DATA,'store.json');
+const UP=(process.env.UPSTASH_REDIS_REST_URL||process.env.KV_REST_API_URL||'').replace(/\/$/,''),UPT=process.env.UPSTASH_REDIS_REST_TOKEN||process.env.KV_REST_API_TOKEN,FILE=path.join(DATA,'store.json');
+const PROD=!!process.env.VERCEL||process.env.NODE_ENV==='production';
+const noStore=()=>{throw Error('Storage not configured: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN')};
 async function sget(k){if(UP){const r=await fetch(`${UP}/get/${encodeURIComponent('ch:'+k)}`,{headers:{authorization:`Bearer ${UPT}`}}).then(r=>r.json());return r.result?JSON.parse(r.result):null}
- try{return JSON.parse(fs.readFileSync(FILE))[k]??null}catch{return null}}
-async function sset(k,v){if(UP){await fetch(`${UP}/set/${encodeURIComponent('ch:'+k)}`,{method:'POST',headers:{authorization:`Bearer ${UPT}`},body:JSON.stringify(v)});return}
- let d={};try{d=JSON.parse(fs.readFileSync(FILE))}catch{};if(v===null)delete d[k];else d[k]=v;fs.writeFileSync(FILE,JSON.stringify(d,null,1))}
+ if(PROD)noStore();try{return JSON.parse(fs.readFileSync(FILE))[k]??null}catch{return null}}
+async function sset(k,v){if(UP){if(v===null){await fetch(`${UP}/del/${encodeURIComponent('ch:'+k)}`,{method:'POST',headers:{authorization:`Bearer ${UPT}`}});return}await fetch(`${UP}/set/${encodeURIComponent('ch:'+k)}`,{method:'POST',headers:{authorization:`Bearer ${UPT}`},body:JSON.stringify(v)});return}
+ if(PROD)noStore();let d={};try{d=JSON.parse(fs.readFileSync(FILE))}catch{};if(v===null)delete d[k];else d[k]=v;fs.writeFileSync(FILE,JSON.stringify(d,null,1))}
 // ---------- auth ----------
 const hashPin=(pin,salt)=>crypto.scryptSync(pin,salt,32).toString('hex');
 const sign=s=>s+'.'+crypto.createHmac('sha256',SECRET).update(s).digest('base64url');
@@ -24,7 +26,9 @@ const fails={};// simple brute-force throttle per team+ip
 // ---------- ESPN ----------
 const BASE=`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON}/segments/0/leagues/${LEAGUE}`;
 const espnHeaders=extra=>({...(process.env.ESPN_S2?{cookie:`espn_s2=${process.env.ESPN_S2}; SWID=${process.env.ESPN_SWID}`}:{}),...extra});
-const cache={};async function cached(key,ms,fn){const c=cache[key];if(c&&Date.now()-c.t<ms)return c.v;try{const v=await fn();cache[key]={t:Date.now(),v};return v}catch(e){if(c)return c.v;throw e}}
+const cache={};async function cached(key,ms,fn){let c=cache[key];if(c&&Date.now()-c.t<ms)return c.v;
+ if(UP){try{const r=await fetch(`${UP}/get/${encodeURIComponent('ch:cache:'+key)}`,{headers:{authorization:`Bearer ${UPT}`}}).then(r=>r.json());const sc=r.result&&JSON.parse(r.result);if(sc){cache[key]=c=sc;if(Date.now()-sc.t<ms)return sc.v}}catch{}}
+ try{const v=await fn();cache[key]={t:Date.now(),v};if(UP)await fetch(`${UP}/set/${encodeURIComponent('ch:cache:'+key)}?EX=86400`,{method:'POST',headers:{authorization:`Bearer ${UPT}`},body:JSON.stringify(cache[key])}).catch(()=>{});return v}catch(e){if(c)return c.v;throw e}}
 async function espn(q,hdr){const r=await fetch(`${BASE}?${q}`,{headers:espnHeaders(hdr)});if(!r.ok)throw Error(r.status===401?'ESPN says this league is private — set ESPN_S2 and ESPN_SWID':'ESPN '+r.status);return r.json()}
 const POS={1:'QB',2:'RB',3:'WR',4:'TE',5:'K',16:'D/ST'},SLOT={0:'QB',2:'RB',4:'WR',6:'TE',23:'FLEX',16:'D/ST',17:'K',20:'BE',21:'IR'};
 const PRO={0:'FA',1:'ATL',2:'BUF',3:'CHI',4:'CIN',5:'CLE',6:'DAL',7:'DEN',8:'DET',9:'GB',10:'TEN',11:'IND',12:'KC',13:'LV',14:'LAR',15:'MIA',16:'MIN',17:'NE',18:'NO',19:'NYG',20:'NYJ',21:'PHI',22:'ARI',23:'PIT',24:'LAC',25:'SF',26:'SEA',27:'TB',28:'WSH',29:'CAR',30:'JAX',33:'BAL',34:'HOU'};
@@ -101,8 +105,8 @@ async function getHistory(L){return cached('hist',6*3600e3,async()=>{
 const json=(res,c,o,h={})=>{res.writeHead(c,{'content-type':'application/json','cache-control':'no-store',...h});res.end(JSON.stringify(o))};
 const body=r=>new Promise(ok=>{let b='';r.on('data',c=>{b+=c;if(b.length>1e5)r.destroy()});r.on('end',()=>{try{ok(JSON.parse(b||'{}'))}catch{ok({})}})});
 const SECURE=process.env.NODE_ENV==='production'?'; Secure':'';
-http.createServer(async(req,res)=>{try{const u=new URL(req.url,'http://x'),p=u.pathname,M=req.method;
- if(p==='/api/health')return json(res,200,{ok:true});
+async function handler(req,res){try{const u=new URL(req.url,'http://x'),p=u.pathname,M=req.method;
+ if(p==='/api/health')return json(res,200,{ok:true,storage:UP?'upstash':PROD?'MISSING':'file'});
  if(p==='/api/league'){const L=await getLeague();const hist=await getHistory(L);
   return json(res,200,{...L,teams:L.teams.map(({roster,...t})=>({...t,topPlayers:roster.filter(p=>p.slot!=='BE'&&p.slot!=='IR').sort((a,b)=>b.avg-a.avg).slice(0,3).map(p=>p.name)})),history:hist,seasons:[...new Set([...historySeed.seasons,L.season])]})}
  if(p==='/api/news'){const d=await cached('news',15*60e3,()=>fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit=25').then(r=>r.json()));
@@ -147,4 +151,6 @@ http.createServer(async(req,res)=>{try{const u=new URL(req.url,'http://x'),p=u.p
  if(!f.startsWith(PUB)||!fs.existsSync(f)||fs.statSync(f).isDirectory())f=path.join(PUB,'index.html');
  const ext={'.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.html':'text/html; charset=utf-8','.webmanifest':'application/manifest+json','.png':'image/png'}[path.extname(f)]||'application/octet-stream';
  res.writeHead(200,{'content-type':ext,'cache-control':ext.startsWith('text/html')?'no-cache':'public, max-age=3600'});fs.createReadStream(f).pipe(res)}
-catch(e){console.error(e);json(res,502,{error:e.message})}}).listen(PORT,()=>console.log(`Clubhouse on :${PORT} season ${SEASON} league ${LEAGUE}`));
+catch(e){console.error(e);json(res,502,{error:e.message})}}
+module.exports=handler;
+if(require.main===module)http.createServer(handler).listen(PORT,()=>console.log(`Clubhouse on :${PORT} season ${SEASON} league ${LEAGUE}`));

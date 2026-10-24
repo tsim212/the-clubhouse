@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "",
+  "outputDirectory": "public",
+  "functions": { "api/index.js": { "includeFiles": "{server.js,data/history-seed.json}", "maxDuration": 15 } },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index?__p=api/:path*" },
+    { "source": "/admin", "destination": "/api/index?__p=admin" }
+  ]
+}
