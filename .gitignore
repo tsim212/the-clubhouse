@@ -6,3 +6,5 @@ data/*.db
 .env
 screens/
 *.log
+.vercel
+.env*
