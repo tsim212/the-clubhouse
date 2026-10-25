@@ -135,7 +135,7 @@ async function handler(req,res){try{const u=new URL(req.url,'http://x'),p=u.path
   if(b.delete){await sset('notes:'+b.team,list.filter(n=>n.id!==b.delete));return json(res,200,{ok:true})}
   const n={id:crypto.randomBytes(5).toString('hex'),t:Date.now(),week:b.week||null,kind:String(b.kind||'note').slice(0,20),text:String(b.text||'').slice(0,1000),outcome:String(b.outcome||'').slice(0,200)};
   if(!n.text.trim())return json(res,400,{error:'Write something first.'});list.unshift(n);await sset('notes:'+b.team,list.slice(0,300));return json(res,200,n)}
- if(['/api/draft','/api/power','/api/waiver-report','/api/rosters','/api/trade'].includes(p)){try{return json(res,200,await EXTRA(p,u))}catch(e){return json(res,e.code===401?403:502,{error:e.message})}}
+ if(['/api/draft','/api/tendencies','/api/power','/api/waiver-report','/api/rosters','/api/trade'].includes(p)){try{return json(res,200,await EXTRA(p,u))}catch(e){return json(res,e.code===401?403:502,{error:e.message})}}
  // ---- admin ----
  if(p==='/api/admin/login'&&M==='POST'){const{password}=await body(req);const ap=process.env.ADMIN_PASSWORD;
   let okA=false;if(ap){const a=crypto.createHash('sha256').update(String(password||'')).digest(),b=crypto.createHash('sha256').update(ap).digest();okA=crypto.timingSafeEqual(a,b)}
@@ -154,6 +154,6 @@ async function handler(req,res){try{const u=new URL(req.url,'http://x'),p=u.path
  const ext={'.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.html':'text/html; charset=utf-8','.webmanifest':'application/manifest+json','.png':'image/png'}[path.extname(f)]||'application/octet-stream';
  res.writeHead(200,{'content-type':ext,'cache-control':ext.startsWith('text/html')?'no-cache':'public, max-age=3600'});fs.createReadStream(f).pipe(res)}
 catch(e){console.error(e);json(res,502,{error:e.message})}}
-const EXTRA=require('./extras.js')({espnHeaders,cached,getLeague,LEAGUE,SEASON,POS,PRO});
+const EXTRA=require('./extras.js')({espnHeaders,cached,getLeague,LEAGUE,SEASON,POS,PRO,historySeed});
 module.exports=handler;
 if(require.main===module)http.createServer(handler).listen(PORT,()=>console.log(`Clubhouse on :${PORT} season ${SEASON} league ${LEAGUE}`));

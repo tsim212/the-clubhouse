@@ -1,62 +1,106 @@
 // Draft Review, Draft Prep, Trade Analyzer, Power Rankings/Luck, Waiver Report Card. Public ESPN data only (no PINs/admin data).
-module.exports=function(C){const{espnHeaders,cached,getLeague,LEAGUE,SEASON,POS,PRO}=C;
+module.exports=function(C){const{espnHeaders,cached,getLeague,LEAGUE,SEASON,POS,PRO,historySeed}=C;
 const base=s=>`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${s}/segments/0/leagues/${LEAGUE}`;
 async function E(s,q,h){const r=await fetch(`${base(s)}?${q}`,{headers:espnHeaders(h)});if(!r.ok){const e=Error(r.status===401?`ESPN keeps the ${s} season private. The commissioner can unlock past seasons by adding ESPN_S2 and ESPN_SWID login cookies on the server.`:'ESPN '+r.status);e.code=r.status;throw e}return r.json()}
 const r1=n=>+(+n||0).toFixed(1);
 const shape=(p,s)=>{const st=p.stats||[],f=(src,per,sp)=>st.find(x=>x.statSourceId===src&&x.scoringPeriodId===per&&x.statSplitTypeId===sp&&(!x.seasonId||x.seasonId===s));
- const t=f(0,0,0),pj=f(1,0,0);return{id:p.id,name:p.fullName,pos:POS[p.defaultPositionId]||'?',team:PRO[p.proTeamId]||'',pts:r1(t?.appliedTotal),avg:r1(t?.appliedAverage),proj:r1(pj?.appliedTotal),injury:p.injuryStatus||'ACTIVE'}};
-async function players(s,ids){return cached('pl'+s,s<SEASON?7*864e5:30*60e3,async()=>{const sid='00'+s,tf={value:2,additionalValue:[sid,'10'+s]};
+ const t=f(0,0,0),pj=f(1,0,0);return{id:p.id,name:p.fullName,pos:POS[p.defaultPositionId]||'?',team:PRO[p.proTeamId]||'',pts:r1(t?.appliedTotal),avg:r1(t?.appliedAverage),proj:r1(pj?.appliedTotal),injury:p.injuryStatus||'ACTIVE',adp:+(p.ownership?.averageDraftPosition||0).toFixed(1),ranks:Object.fromEntries(Object.entries(p.draftRanksByRankType||{}).map(([k,v])=>[k,v.rank]))}};
+async function players(s,ids){return cached('pl2-'+s,s<SEASON?7*864e5:30*60e3,async()=>{const sid='00'+s,tf={value:2,additionalValue:[sid,'10'+s]};
  const top=await E(s,'scoringPeriodId=0&view=kona_player_info',{'x-fantasy-filter':JSON.stringify({players:{filterSlotIds:{value:[0,2,4,6,16,17]},limit:700,sortAppliedStatTotal:{sortAsc:false,sortPriority:1,value:sid},filterStatsForTopScoringPeriodIds:tf}})});
  const m={};for(const e of top.players)m[e.id]=shape(e.player,s);const miss=ids.filter(i=>!m[i]);
  if(miss.length){const d=await E(s,'scoringPeriodId=0&view=kona_player_info',{'x-fantasy-filter':JSON.stringify({players:{filterIds:{value:miss},limit:miss.length,sortAppliedStatTotal:{sortAsc:false,sortPriority:1,value:sid},filterStatsForTopScoringPeriodIds:tf}})}).catch(()=>({players:[]}));for(const e of d.players)m[e.id]=shape(e.player,s)}
  // positional rank among everyone
  const by={};for(const p of Object.values(m))(by[p.pos]=by[p.pos]||[]).push(p);for(const k in by)by[k].sort((a,b)=>b.pts-a.pts).forEach((p,i)=>p.posRank=i+1);return m})}
-// ---------------- DRAFT ----------------
-async function draft(s){return cached('draft'+s,s<SEASON?7*864e5:30*60e3,async()=>{
+// Decision = pick vs pre-draft consensus (ESPN ADP; PPR/STANDARD preseason rank as fallback). Outcome = points vs slot, kept separate.
+async function draft(s){return cached('draft3-'+s,s<SEASON?7*864e5:30*60e3,async()=>{
  const d=await E(s,'view=mDraftDetail&view=mTeam&view=mSettings');if(!d.draftDetail?.drafted)throw Error(`The ${s} draft hasn't happened yet.`);
+ const ppr=(d.settings?.scoringSettings?.scoringItems||[]).some(x=>x.statId===53&&x.points>0),rankType=ppr?'PPR':'STANDARD',need=d.settings?.rosterSettings?.lineupSlotCounts||{};
  const members=Object.fromEntries((d.members||[]).map(m=>[m.id,`${(m.firstName||'').trim()} ${(m.lastName||'').trim()}`.trim()]));
- const teams=Object.fromEntries(d.teams.map(t=>[String(t.id),{id:String(t.id),name:(t.name||`${t.location} ${t.nickname}`).replace(/\s+/g,' ').trim(),manager:members[t.primaryOwner]||''}]));
+ const teams=Object.fromEntries(d.teams.map(t=>[String(t.id),{id:String(t.id),ownerId:t.primaryOwner,name:(t.name||`${t.location} ${t.nickname}`).replace(/\s+/g,' ').trim(),manager:members[t.primaryOwner]||''}]));
  const raw=d.draftDetail.picks.filter(p=>p.playerId>0);const P=await players(s,raw.map(p=>p.playerId)),n=Object.keys(teams).length;
- const picks=raw.map(p=>{const pl=P[p.playerId]||{id:p.playerId,name:'Player '+p.playerId,pos:'?',pts:0,posRank:999};return{...pl,pro:pl.team,overall:p.overallPickNumber,round:p.roundId,pick:p.roundPickNumber,team:String(p.teamId),keeper:p.keeper}}).sort((a,b)=>a.overall-b.overall);
- // expected points: the Nth player drafted at a position "should" score like the Nth best at that position
- const cnt={},sorted={};for(const pos in POS){}for(const p of Object.values(P))(sorted[p.pos]=sorted[p.pos]||[]).push(p.pts);for(const k in sorted)sorted[k].sort((a,b)=>b-a);
- for(const p of picks){cnt[p.pos]=(cnt[p.pos]||0)+1;p.slotRank=cnt[p.pos];p.expected=r1((sorted[p.pos]||[])[p.slotRank-1]||0);p.value=r1(p.pts-p.expected)}
- const later=p=>picks.filter(q=>q.overall>p.overall&&q.overall<=p.overall+n&&q.pts>p.pts+15).sort((a,b)=>b.pts-a.pts).slice(0,3).map(q=>({name:q.name,pos:q.pos,overall:q.overall,round:q.round,pts:q.pts,posRank:q.posRank,team:teams[q.team]?.name}));
+ const picks=raw.map(p=>{const pl=P[p.playerId]||{id:p.playerId,name:'Player '+p.playerId,pos:'?',pts:0,posRank:999};const rk=pl.ranks?.[rankType];
+  const adp=pl.adp>0?pl.adp:null,cons=adp||rk||null;return{...pl,pro:pl.team,overall:p.overallPickNumber,round:p.roundId,pick:p.roundPickNumber,team:String(p.teamId),keeper:p.keeper,adp,rank:rk||null,cons,src:adp?'ADP':rk?rankType+' rank':null}}).sort((a,b)=>a.overall-b.overall);
+ // ESPN's raw ADP runs late vs a 12-team draft (all leagues, all sizes), so convert it to a consensus slot within this draft: the Nth-lowest ADP among drafted players = pick N.
+ [...picks].filter(p=>p.cons).sort((a,b)=>a.cons-b.cons).forEach((p,i)=>{p.rawCons=p.cons;p.cons=i+1});
  const rounds=Math.max(...picks.map(p=>p.round));
- const out={};for(const id in teams){const mine=picks.filter(p=>p.team===id);const core=mine.filter(p=>p.round<=Math.ceil(rounds*0.6));
-  const busts=[...mine].filter(p=>p.value<0&&p.round<=Math.ceil(rounds*0.75)).sort((a,b)=>a.value-b.value).slice(0,4).map(p=>({...p,couldHave:later(p)}));
-  out[id]={...teams[id],picks:mine,steals:[...mine].filter(p=>p.value>0).sort((a,b)=>b.value-a.value).slice(0,4),busts,score:r1(core.reduce((a,p)=>a+p.value,0)),total:r1(mine.reduce((a,p)=>a+p.pts,0)),lessons:lessons(mine,rounds,picks)}}
- const ranked=Object.values(out).sort((a,b)=>b.score-a.score),G=['A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F'];
- ranked.forEach((t,i)=>{t.grade=G[Math.min(G.length-1,Math.round(i*(G.length-1)/Math.max(1,ranked.length-1)))];t.gradeRank=i+1});
- // position runs: 4+ of 5 consecutive picks at one position
+ const sorted={};for(const p of Object.values(P))(sorted[p.pos]=sorted[p.pos]||[]).push(p.pts);for(const k in sorted)sorted[k].sort((a,b)=>b-a);
+ const cnt={};for(const p of picks){cnt[p.pos]=(cnt[p.pos]||0)+1;p.slotRank=cnt[p.pos];p.expected=r1((sorted[p.pos]||[])[p.slotRank-1]||0);p.value=r1(p.pts-p.expected)}
+ // QB/TE depth at the moment of each pick (consensus-top-N still on the board)
+ const posCons={};for(const p of Object.values(P))if(p.adp>0||p.ranks?.[rankType])(posCons[p.pos]=posCons[p.pos]||[]).push(p);for(const k in posCons)posCons[k].sort((a,b)=>(a.adp||a.ranks[rankType])-(b.adp||b.ranks[rankType]));
+ const takenBy=new Map(picks.map(p=>[p.id,p.overall]));
+ for(const p of picks){const tol=Math.max(n*0.75,p.overall*0.2);p.delta=p.cons?r1(p.overall-p.cons):null;p.flags=[];
+  if(p.cons&&p.overall<p.cons-tol)p.flags.push({t:'reach',bad:true,text:`Reach: taken #${p.overall}, consensus ${p.src} slot ${Math.round(p.cons)}`});
+  if(p.cons&&p.overall>p.cons+tol)p.flags.push({t:'value',bad:false,text:`Value: fell to #${p.overall} (${p.src} slot ${Math.round(p.cons)})`});
+  if(['K','D/ST'].includes(p.pos)&&p.round<rounds-1)p.flags.push({t:'kdef',bad:true,text:`${p.pos==='K'?'Kicker':'Defense'} before the last two rounds`});
+  if(['QB','TE'].includes(p.pos)&&p.round<=6){const left=(posCons[p.pos]||[]).slice(0,n).filter(q=>q.id!==p.id&&(takenBy.get(q.id)||1e9)>p.overall).length;p.depthLeft=left;
+   if(left>=Math.ceil(n/2)&&!(p.delta>0))p.flags.push({t:'depth',bad:true,text:`${left} of the consensus top-${n} ${p.pos}s were still available — ${p.pos} could wait`})}}
+ const out={};for(const id in teams){const mine=picks.filter(p=>p.team===id);const have={},filled=()=>['0','2','4','6'].every(s=>(have[s]||0)>=(need[s]||0))&&((have[2]||0)+(have[4]||0)+(have[6]||0)>=(need[2]||0)+(need[4]||0)+(need[6]||0)+(need[23]||0));
+  const slotOf={QB:'0',RB:'2',WR:'4',TE:'6','D/ST':'16',K:'17'};
+  for(const p of mine){const s=slotOf[p.pos];if(['QB','TE','K','D/ST'].includes(p.pos)&&(have[s]||0)>=(need[s]||1)&&!filled())p.flags.push({t:'backup',bad:true,text:`Backup ${p.pos} taken before your starting lineup was filled`});
+   if(p.pos==='RB'&&mine.some(q=>q.overall<p.overall&&q.pos==='RB'&&q.pro===p.pro&&p.pro))p.flags.push({t:'cuff',bad:null,text:`Handcuff to your ${mine.find(q=>q.overall<p.overall&&q.pos==='RB'&&q.pro===p.pro).name} (${p.pro})`});
+   have[s]=(have[s]||0)+1;
+   const w=1/Math.sqrt(p.round),dv=p.delta==null?0:Math.max(-3,Math.min(3,p.delta/n));p.decision=+(w*dv-p.flags.filter(f=>f.bad).length*0.4*w).toFixed(2);
+   const goodDec=!p.flags.some(f=>f.bad),goodOut=p.value>=0;p.verdict=goodDec?(goodOut?'Good pick':'Bad luck'):(goodOut?'Lucky':'Bad pick')}
+  const six=mine.filter(p=>p.round<=6),c=k=>six.filter(p=>p.pos===k).length,imb=[];
+  if(Math.abs(c('RB')-c('WR'))>=3)imb.push(`${c('RB')} RB vs ${c('WR')} WR in rounds 1–6`);if(c('RB')===0)imb.push('no RB in rounds 1–6');if(c('WR')===0)imb.push('no WR in rounds 1–6');
+  out[id]={...teams[id],picks:mine,imbalance:imb,decisionScore:+mine.reduce((a,p)=>a+p.decision,0).toFixed(2)-imb.length*0.5,score:r1(mine.filter(p=>p.round<=Math.ceil(rounds*0.6)).reduce((a,p)=>a+p.value,0)),total:r1(mine.reduce((a,p)=>a+p.pts,0)),
+   reaches:mine.filter(p=>p.flags.some(f=>f.bad)).sort((a,b)=>a.decision-b.decision).slice(0,5),values:mine.filter(p=>p.flags.some(f=>f.t==='value')).sort((a,b)=>b.delta-a.delta).slice(0,4),
+   badLuck:mine.filter(p=>p.verdict==='Bad luck'&&p.round<=rounds*0.75).sort((a,b)=>a.value-b.value).slice(0,4),
+   avgReach:r1(mine.filter(p=>p.delta!=null&&p.round<=10).reduce((a,p,_,A)=>a+p.delta/A.length,0))}
+  out[id].lessons=lessons(out[id],rounds,n)}
+ const G=['A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F'],grade=(arr,k,g)=>arr.sort((a,b)=>b[k]-a[k]).forEach((t,i)=>{t[g]=G[Math.min(11,Math.round(i*11/Math.max(1,arr.length-1)))];t[g+'Rank']=i+1});
+ grade(Object.values(out),'score','outcomeGrade');const ranked=Object.values(out);grade(ranked,'decisionScore','grade');
  const runs=[];for(let i=0;i+5<=picks.length;i++){const w=picks.slice(i,i+5),c={};w.forEach(p=>c[p.pos]=(c[p.pos]||0)+1);const pos=Object.keys(c).find(k=>c[k]>=4);if(!pos)continue;
   const last=runs.at(-1);if(last&&last.pos===pos&&last.to>=w[0].overall-1){last.to=Math.max(last.to,w.at(-1).overall);continue}runs.push({pos,from:w[0].overall,to:w.at(-1).overall})}
- runs.forEach(r=>{const ps=picks.filter(p=>p.overall>=r.from&&p.overall<=r.to&&p.pos===r.pos);r.from=ps[0].overall;r.to=ps.at(-1).overall;r.round=ps[0].round;r.players=ps.map(p=>p.name);r.avgValue=r1(ps.reduce((a,p)=>a+p.value,0)/ps.length)});
- const tn=p=>({...p,teamName:teams[p.team]?.name});
- return{season:s,complete:s<SEASON,teams:out,order:ranked.map(t=>t.id),best:[...picks].sort((a,b)=>b.value-a.value).slice(0,8).map(tn),worst:[...picks].filter(p=>p.round<=rounds*0.75).sort((a,b)=>a.value-b.value).slice(0,8).map(tn),runs,rounds,
-  prep:prep(picks,P,teams,rounds)}})}
-function lessons(m,rounds,all){const L=[],early=Math.ceil(rounds/3);
- for(const pos of['QB','TE']){const q=m.find(p=>p.pos===pos&&p.round<=4);if(q){const later=all.filter(p=>p.pos===pos&&p.round>=q.round+3&&p.pts>q.pts);
-  if(later.length)L.push({bad:true,text:`You took a ${pos} too early: ${q.name} in round ${q.round}, but ${later.length} ${pos}${later.length>1?'s':''} taken 3+ rounds later outscored him (e.g. ${later[0].name}, round ${later[0].round}).`})}}
- for(const pos of['RB','WR']){const e=m.filter(p=>p.pos===pos&&p.round>=1&&p.round<=5),bad=e.filter(p=>p.value<-10);
-  if(bad.length>=2)L.push({bad:true,text:`The ${pos}s you took in rounds ${Math.min(...bad.map(p=>p.round))}–${Math.max(...bad.map(p=>p.round))} busted (${bad.map(p=>p.name).join(', ')}). Lean on proven volume over upside early.`});
-  const late=m.filter(p=>p.pos===pos&&p.round>early&&p.value>15);if(late.length)L.push({bad:false,text:`Your later-round ${pos}s paid off (${late.map(p=>`${p.name}, rd ${p.round}`).join('; ')}). You can wait on ${pos} depth.`})}
- const kd=m.filter(p=>['K','D/ST'].includes(p.pos)&&p.round<rounds-2);if(kd.length)L.push({bad:true,text:`You drafted ${kd.map(p=>`${p.pos==='K'?'a kicker':'a defense'} in round ${p.round}`).join(' and ')}. Wait until the last two rounds; those picks are better spent on RB/WR upside.`});
- const top=m.filter(p=>p.round<=3),hit=top.filter(p=>p.value>=0).length;if(top.length)L.push({bad:hit<2,text:`${hit} of your ${top.length} first-three-round picks returned their draft value.${hit<2?' Early-round hit rate is where leagues are won — favor high-floor players there.':''}`});
- const dup=m.filter(p=>p.round<=6).reduce((a,p)=>(a[p.pos]=(a[p.pos]||0)+1,a),{});for(const k in dup)if(dup[k]>=4)L.push({bad:true,text:`You took ${dup[k]} ${k}s in the first six rounds — that crowds your bench while other spots stay thin.`});
+ runs.forEach(r=>{const ps=picks.filter(p=>p.overall>=r.from&&p.overall<=r.to&&p.pos===r.pos);r.from=ps[0].overall;r.to=ps.at(-1).overall;r.round=ps[0].round;r.players=ps.map(p=>p.name);r.avgDelta=r1(ps.reduce((a,p)=>a+(p.delta||0),0)/ps.length);r.avgValue=r1(ps.reduce((a,p)=>a+p.value,0)/ps.length)});
+ const tn=p=>({...p,teamName:teams[p.team]?.name});const withC=picks.filter(p=>p.delta!=null);
+ return{season:s,complete:s<SEASON,rankSource:`ESPN average draft position (kona_player_info ownership.averageDraftPosition), re-ranked among the players actually drafted to give each a consensus pick slot; ESPN ${rankType} preseason rank (draftRanksByRankType.${rankType}) only where ADP is missing`,
+  coverage:`${withC.filter(p=>p.src==='ADP').length} of ${picks.length} picks had ADP, ${withC.filter(p=>p.src!=='ADP').length} used rank, ${picks.length-withC.length} had neither`,
+  teams:out,order:ranked.map(t=>t.id),bestValues:[...withC].sort((a,b)=>b.delta-a.delta).slice(0,8).map(tn),worstReaches:[...withC].filter(p=>p.round<rounds-1||['K','D/ST'].includes(p.pos)).sort((a,b)=>a.delta-b.delta).slice(0,8).map(tn),
+  best:[...picks].sort((a,b)=>b.value-a.value).slice(0,6).map(tn),worst:[...picks].filter(p=>p.round<=rounds*0.75).sort((a,b)=>a.value-b.value).slice(0,6).map(tn),runs,rounds,prep:prep(picks,P,teams,rounds,n)}})}
+function lessons(t,rounds,n){const L=[],m=t.picks,f=k=>m.filter(p=>p.flags.some(x=>x.t===k));
+ const kd=f('kdef');if(kd.length)L.push({bad:true,text:`You spent ${kd.map(p=>`round ${p.round} on ${p.pos==='K'?'a kicker':'a defense'} (${p.name})`).join(' and ')}. Kickers and defenses are nearly interchangeable and streamable — always take them in the last two rounds.`});
+ const dp=f('depth');for(const p of dp)L.push({bad:true,text:`${p.pos} in round ${p.round} (${p.name}) when ${p.depthLeft} consensus-starting ${p.pos}s were still on the board. With that depth, the logical move was RB/WR there and a ${p.pos} later.`});
+ const re=f('reach').filter(p=>p.round<=8);if(re.length)L.push({bad:true,text:`Reaches vs ADP: ${re.map(p=>`${p.name} (#${p.overall}, ADP slot ${Math.round(p.cons)})`).join('; ')}. You could likely have gotten ${re.length>1?'them':'him'} a round later and taken the best player available.`});
+ const bk=f('backup');if(bk.length)L.push({bad:true,text:`You took a backup ${[...new Set(bk.map(p=>p.pos))].join('/')} (${bk.map(p=>`${p.name}, rd ${p.round}`).join('; ')}) before filling every starting spot.`});
+ const cf=f('cuff');if(cf.length)L.push({bad:null,text:`Handcuff${cf.length>1?'s':''}: ${cf.map(p=>p.name).join(', ')}. Fine as a late-round insurance policy; costly before round 10.`});
+ if(t.imbalance.length)L.push({bad:true,text:`Roster balance: ${t.imbalance.join(', ')}. Starting lineups need both — imbalance forces weak starters or trades.`});
+ const va=t.values;if(va.length)L.push({bad:false,text:`Good discipline letting value come to you: ${va.map(p=>`${p.name} (#${p.overall}, ADP slot ${Math.round(p.cons)})`).join('; ')}.`});
+ const bl=t.badLuck;if(bl.length)L.push({bad:false,luck:true,text:`Bad luck, not bad picks: ${bl.map(p=>`${p.name} (rd ${p.round}, ADP ${p.cons?Math.round(p.cons):'?'})`).join(', ')} ${bl.length>1?'were':'was'} taken at or after consensus. Same process next year is fine — just diversify so one injury doesn't sink a position.`});
+ if(t.avgReach<-n/2)L.push({bad:true,text:`On average you picked ${Math.abs(t.avgReach)} spots ahead of ADP in rounds 1–10. Trust the board more — let your target fall to you.`});
  return L}
-function prep(picks,P,teams,rounds){const drafted=new Map(picks.map(p=>[p.id,p]));const out={};
+function prep(picks,P,teams,rounds,n){const drafted=new Map(picks.map(p=>[p.id,p]));const out={};
  for(const pos of['QB','RB','WR','TE','D/ST','K']){const all=Object.values(P).filter(p=>p.pos===pos).sort((a,b)=>b.pts-a.pts);
-  const breakouts=all.slice(0,40).map(p=>{const d=drafted.get(p.id);return{name:p.name,pts:p.pts,posRank:p.posRank,cost:d?`Rd ${d.round} (#${d.overall})`:'Undrafted',value:d?d.value:r1(p.pts-(all[11]?.pts||0)),undrafted:!d}}).filter(p=>p.undrafted?p.posRank<=15:p.value>0).sort((a,b)=>b.value-a.value).slice(0,5);
-  const busts=picks.filter(p=>p.pos===pos&&p.round<=rounds*0.6).sort((a,b)=>a.value-b.value).slice(0,4).map(p=>({name:p.name,pts:p.pts,posRank:p.posRank,cost:`Rd ${p.round} (#${p.overall})`,value:p.value}));
+  const breakouts=all.slice(0,40).map(p=>{const d=drafted.get(p.id);return{name:p.name,pts:p.pts,posRank:p.posRank,cost:d?`Rd ${d.round} (#${d.overall})`:'Undrafted',adp:p.adp>0?r1(p.adp):null,value:d?d.value:r1(p.pts-(all[11]?.pts||0)),undrafted:!d}}).filter(p=>p.undrafted?p.posRank<=15:p.value>0).sort((a,b)=>b.value-a.value).slice(0,5);
+  const busts=picks.filter(p=>p.pos===pos&&p.round<=rounds*0.6).sort((a,b)=>a.value-b.value).slice(0,4).map(p=>({name:p.name,pts:p.pts,posRank:p.posRank,cost:`Rd ${p.round} (#${p.overall})`,adp:p.cons?Math.round(p.cons):null,value:p.value,verdict:p.verdict}));
   const tier=(a,b)=>r1(all.slice(a,b).reduce((x,p)=>x+p.pts,0)/Math.max(1,all.slice(a,b).length));
   const byRound=[[1,3],[4,7],[8,rounds]].map(([a,b])=>{const ps=picks.filter(p=>p.pos===pos&&p.round>=a&&p.round<=b);return{rounds:`${a}–${b}`,n:ps.length,avgValue:ps.length?r1(ps.reduce((x,p)=>x+p.value,0)/ps.length):null}});
-  out[pos]={breakouts,busts,top3:tier(0,3),mid:tier(9,12),drop:r1(tier(0,3)-tier(9,12)),byRound}}
+  const ps=picks.filter(p=>p.pos===pos&&p.delta!=null);out[pos]={breakouts,busts,top3:tier(0,3),mid:tier(9,12),drop:r1(tier(0,3)-tier(9,12)),byRound,reachRate:ps.length?Math.round(100*ps.filter(p=>p.flags.some(f=>f.t==='reach'||f.t==='kdef')).length/ps.length):null,avgDelta:ps.length?r1(ps.reduce((a,p)=>a+p.delta,0)/ps.length):null}}
  const scar=Object.entries(out).filter(([k])=>['QB','RB','WR','TE'].includes(k)).sort((a,b)=>b[1].drop-a[1].drop);
- const tips=[`Biggest elite-vs-average gap: ${scar[0][0]} (top-3 average ${scar[0][1].top3} pts vs ${scar[0][1].mid} for #10–12). That's where an early pick buys the most edge.`,
-  `Smallest gap: ${scar.at(-1)[0]} (${scar.at(-1)[1].drop} pts between tiers) — you can wait there.`];
- for(const[k,v]of Object.entries(out)){const best=v.byRound.filter(r=>r.n>=3&&r.avgValue!=null).sort((a,b)=>b.avgValue-a.avgValue)[0];if(best&&['QB','RB','WR','TE'].includes(k))tips.push(`${k} value this year came in rounds ${best.rounds} (average ${best.avgValue>0?'+':''}${best.avgValue} pts vs slot).`)}
+ const most=Object.entries(out).filter(([,v])=>v.reachRate!=null).sort((a,b)=>b[1].reachRate-a[1].reachRate)[0];
+ const tips=[`Biggest elite-vs-average gap: ${scar[0][0]} (top-3 average ${scar[0][1].top3} pts vs ${scar[0][1].mid} for #10–12). Paying ADP for an elite ${scar[0][0]} is a logical bet.`,
+  `Smallest gap: ${scar.at(-1)[0]} (${scar.at(-1)[1].drop} pts between tiers) — wait there; the drop-off is small.`,
+  most?`This league reaches most at ${most[0]} (${most[1].reachRate}% of picks went well ahead of ADP). Expect it again, but don't join the panic — take the value that falls.`:null].filter(Boolean);
  return{positions:out,tips}}
+// ---------------- multi-year tendencies (needs every season ESPN will give us) ----------------
+async function tendencies(){return cached('tend1',6*3600e3,async()=>{const seasons=[...new Set([...(historySeed.seasons||[]),SEASON])].sort((a,b)=>a-b);const got=[],missing=[];
+ for(const s of seasons){try{got.push(await draft(s))}catch(e){missing.push({season:s,reason:e.message})}}
+ const fin={};for(const r of historySeed.history||[])for(const l of r.seasonLines||[])fin[r.ownerId+'|'+l.year]=l;
+ const M={};for(const d of got)for(const t of Object.values(d.teams)){const k=t.ownerId||t.manager;const m=M[k]=M[k]||{ownerId:t.ownerId,manager:t.manager,teamNames:new Set(),years:[]};m.teamNames.add(t.name);
+  const first=pos=>t.picks.find(p=>p.pos===pos)?.round||null,early=t.picks.filter(p=>p.round<=8);
+  m.years.push({season:d.season,team:t.name,teamId:t.id,r13:t.picks.filter(p=>p.round<=3).map(p=>p.pos),firstQB:first('QB'),firstTE:first('TE'),firstK:first('K'),firstDST:first('D/ST'),avgReach:t.avgReach,
+   rb:early.filter(p=>p.pos==='RB').length,wr:early.filter(p=>p.pos==='WR').length,pros:t.picks.map(p=>p.pro).filter(Boolean),players:t.picks.map(p=>p.name),grade:t.grade,finish:fin[t.ownerId+'|'+d.season]?.finish||null,wins:fin[t.ownerId+'|'+d.season]?.wins})}
+ const avg=a=>{a=a.filter(x=>x!=null);return a.length?r1(a.reduce((x,y)=>x+y,0)/a.length):null};
+ const rows=Object.values(M).map(m=>{const Y=m.years,cnt=a=>Object.entries(a.reduce((o,x)=>(o[x]=(o[x]||0)+1,o),{})).sort((a,b)=>b[1]-a[1]);
+  const rb=avg(Y.map(y=>y.rb)),wr=avg(Y.map(y=>y.wr));const repeat=cnt(Y.flatMap(y=>[...new Set(y.players)])).filter(([,c])=>c>=2).slice(0,6);
+  const fav=cnt(Y.flatMap(y=>y.pros)).slice(0,3).map(([k,c])=>({team:k,n:c,share:Math.round(100*c/Y.flatMap(y=>y.pros).length)}));
+  const done=Y.filter(y=>y.finish&&y.season<SEASON);const corr=[];
+  if(done.length>=3){const good=done.filter(y=>y.finish<=4),bad=done.filter(y=>y.finish>8);const f=(A,k)=>avg(A.map(y=>y[k]));
+   if(good.length&&bad.length){corr.push(`Top-4 finishes: avg first QB round ${f(good,'firstQB')}, ${f(good,'rb')} RB / ${f(good,'wr')} WR in rds 1–8, ADP reach ${f(good,'avgReach')}.`);corr.push(`Bottom finishes: first QB round ${f(bad,'firstQB')}, ${f(bad,'rb')} RB / ${f(bad,'wr')} WR, ADP reach ${f(bad,'avgReach')}.`)}}
+  return{ownerId:m.ownerId,manager:m.manager,teamNames:[...m.teamNames],seasons:Y.map(y=>y.season),years:Y,r13:cnt(Y.flatMap(y=>y.r13)),firstQB:avg(Y.map(y=>y.firstQB)),firstTE:avg(Y.map(y=>y.firstTE)),firstK:avg(Y.map(y=>y.firstK)),firstDST:avg(Y.map(y=>y.firstDST)),
+   avgReach:avg(Y.map(y=>y.avgReach)),rb,wr,lean:rb-wr>=1?'RB-heavy':wr-rb>=1?'WR-heavy':'Balanced',favTeams:fav,repeatPlayers:repeat.map(([k,c])=>({name:k,n:c})),results:corr}});
+ return{seasons:got.map(d=>d.season),missing,rows,needsCookies:missing.some(x=>/private/.test(x.reason))}})}
+
 // ---------------- weekly boxscores & transactions ----------------
 async function week(w,done){return cached('box'+SEASON+'-'+w,done?7*864e5:5*60e3,async()=>{const d=await E(SEASON,`view=mMatchupScore&view=mBoxscore&scoringPeriodId=${w}`);const T={};
  for(const m of d.schedule.filter(m=>m.matchupPeriodId===w))for(const side of[m.home,m.away]){if(!side)continue;const r=side.rosterForCurrentScoringPeriod||side.rosterForMatchupPeriod;if(!r)continue;
@@ -117,6 +161,6 @@ async function trade(a,b,give,get){const L=await getLeague();const A=L.teams.fin
  return{week:L.week,weeksLeft:left,sides:[sa,sb],verdict,why}}
 async function rosters(){const L=await getLeague();return{teams:L.teams.map(t=>({id:t.id,name:t.name,manager:t.manager,roster:t.roster.map(p=>({id:p.id,name:p.name,pos:p.pos,team:p.team,avg:p.avg,slot:p.slot}))}))}}
 return async function(p,u){const s=+(u.searchParams.get('season')||SEASON);
- if(p==='/api/draft')return draft(s);if(p==='/api/power')return power();if(p==='/api/waiver-report')return waivers();if(p==='/api/rosters')return rosters();
+ if(p==='/api/draft')return draft(s);if(p==='/api/tendencies')return tendencies();if(p==='/api/power')return power();if(p==='/api/waiver-report')return waivers();if(p==='/api/rosters')return rosters();
  if(p==='/api/trade'){const ids=k=>(u.searchParams.get(k)||'').split(',').filter(Boolean).map(Number);return trade(u.searchParams.get('a'),u.searchParams.get('b'),ids('give'),ids('get'))}
  return null}};
