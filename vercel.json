@@ -4,7 +4,7 @@
   "functions": {
     "api/index.js": {
       "includeFiles": "{server.js,extras.js,data/history-seed.json}",
-      "maxDuration": 15
+      "maxDuration": 60
     }
   },
   "rewrites": [

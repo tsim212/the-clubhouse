@@ -1,7 +1,8 @@
 // Draft Review, Draft Prep, Trade Analyzer, Power Rankings/Luck, Waiver Report Card. Public ESPN data only (no PINs/admin data).
 module.exports=function(C){const{espnHeaders,cached,getLeague,LEAGUE,SEASON,POS,PRO,historySeed}=C;
 const base=s=>`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${s}/segments/0/leagues/${LEAGUE}`;
-async function E(s,q,h){const r=await fetch(`${base(s)}?${q}`,{headers:espnHeaders(h)});if(!r.ok){const e=Error(r.status===401?`ESPN keeps the ${s} season private. The commissioner can unlock past seasons by adding ESPN_S2 and ESPN_SWID login cookies on the server.`:'ESPN '+r.status);e.code=r.status;throw e}return r.json()}
+// ESPN only serves seasons before 2019 via leagueHistory (returns an array).
+async function E(s,q,h){const old=s<2019,url=old?`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/leagueHistory/${LEAGUE}?seasonId=${s}&${q}`:`${base(s)}?${q}`;const r=await fetch(url,{headers:espnHeaders(h)});if(!r.ok){const e=Error(r.status===401?`ESPN keeps the ${s} season private. The commissioner can unlock past seasons by adding ESPN_S2 and ESPN_SWID login cookies on the server.`:'ESPN '+r.status);e.code=r.status;throw e}const j=await r.json();return old&&Array.isArray(j)?(j[0]||{}):j}
 const r1=n=>+(+n||0).toFixed(1);
 const shape=(p,s)=>{const st=p.stats||[],f=(src,per,sp)=>st.find(x=>x.statSourceId===src&&x.scoringPeriodId===per&&x.statSplitTypeId===sp&&(!x.seasonId||x.seasonId===s));
  const t=f(0,0,0),pj=f(1,0,0);return{id:p.id,name:p.fullName,pos:POS[p.defaultPositionId]||'?',team:PRO[p.proTeamId]||'',pts:r1(t?.appliedTotal),avg:r1(t?.appliedAverage),proj:r1(pj?.appliedTotal),injury:p.injuryStatus||'ACTIVE',adp:+(p.ownership?.averageDraftPosition||0).toFixed(1),ranks:Object.fromEntries(Object.entries(p.draftRanksByRankType||{}).map(([k,v])=>[k,v.rank]))}};
@@ -84,7 +85,7 @@ function prep(picks,P,teams,rounds,n){const drafted=new Map(picks.map(p=>[p.id,p
  return{positions:out,tips}}
 // ---------------- multi-year tendencies (needs every season ESPN will give us) ----------------
 async function tendencies(){return cached('tend1',6*3600e3,async()=>{const seasons=[...new Set([...(historySeed.seasons||[]),SEASON])].sort((a,b)=>a-b);const got=[],missing=[];
- for(const s of seasons){try{got.push(await draft(s))}catch(e){missing.push({season:s,reason:e.message})}}
+ const rs=await Promise.all(seasons.map(s=>draft(s).then(d=>({d}),e=>({s,e}))));for(const r of rs){if(r.d)got.push(r.d);else missing.push({season:r.s,reason:r.e.message})}
  const fin={};for(const r of historySeed.history||[])for(const l of r.seasonLines||[])fin[r.ownerId+'|'+l.year]=l;
  const M={};for(const d of got)for(const t of Object.values(d.teams)){const k=t.ownerId||t.manager;const m=M[k]=M[k]||{ownerId:t.ownerId,manager:t.manager,teamNames:new Set(),years:[]};m.teamNames.add(t.name);
   const first=pos=>t.picks.find(p=>p.pos===pos)?.round||null,early=t.picks.filter(p=>p.round<=8);
